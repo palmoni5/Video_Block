@@ -10,48 +10,39 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    # 1. משיכת הקוד
     - uses: actions/checkout@v3
 
-    # 2. התקנת פייתון
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # 3. התקנת ספריות
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller tk
 
-    # 4. בניית האפליקציה (ודא ששם הסקריפט שלך נכון!)
     - name: Build with PyInstaller
       run: |
-        # אם שינית את שם הסקריפט, שנה אותו גם כאן בשורה למטה
         pyinstaller --onefile --windowed --icon="1.icns" --name "SystemGuard" Install_Video_Block.py
 
-    # 5. דחיסה ל-ZIP
     - name: Zip the App
       run: |
         cd dist
         zip -r SystemGuard.zip SystemGuard.app
 
-    # 6. העלאה לגוגל דרייב (השיטה היציבה עם Rclone ופענוח Python)
-    - name: Upload to Google Drive via Rclone (Robust) 🚀
+    - name: Upload to Google Drive via Rclone (Auto-Fix Padding) 🚀
       env:
-        # מעבירים את הסוד למשתנה סביבה
         GDRIVE_SA_BASE64: ${{ secrets.GDRIVE_CREDENTIALS_B64 }}
       run: |
         echo "🔧 Installing Rclone..."
         brew install rclone > /dev/null
 
-        echo "🔓 Decoding credentials using Python..."
-        # שימוש בפייתון לפענוח בטוח של הסוד (מונע שגיאות רווחים)
-        python3 -c "import os, base64; open('service_account.json', 'wb').write(base64.b64decode(os.environ['GDRIVE_SA_BASE64']))"
+        echo "🔓 Decoding credentials using Python (Smart Mode)..."
+        # הסקריפט הזה מתקן אוטומטית שגיאות padding לפני הפענוח
+        python3 -c "import os, base64; s = os.environ['GDRIVE_SA_BASE64'].strip(); s += '=' * (-len(s) % 4); open('service_account.json', 'wb').write(base64.b64decode(s))"
 
         echo "⚙️ Configuring Rclone..."
-        # יצירת קובץ קונפיגורציה ידני
         mkdir -p ~/.config/rclone
         cat <<EOF > ~/.config/rclone/rclone.conf
         [gdrive]
@@ -61,11 +52,9 @@ jobs:
         EOF
 
         echo "📡 Verifying connection..."
-        # בדיקה שהחיבור תקין לפני ההעלאה
         rclone about gdrive:
 
-        echo "🚀 Uploading to 'SystemGuard' folder..."
-        # העלאת הקובץ
+        echo "🚀 Uploading..."
         rclone copy dist/SystemGuard.zip gdrive:SystemGuard/ --progress
 
-        echo "✅ Upload finished successfully!"
+        echo "✅ Done!"
