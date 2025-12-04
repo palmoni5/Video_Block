@@ -1,0 +1,33 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller tk
+
+    - name: Build with PyInstaller
+      run: |
+        # שים לב: שנה את השם Install_Video_Block.py לשם הקובץ האמיתי שלך
+        pyinstaller --onefile --windowed --name "SystemGuard" Install_Video_Block.py
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SystemGuard-App
+        path: dist/SystemGuard.app
