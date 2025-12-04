@@ -30,42 +30,27 @@ jobs:
       run: |
         # אם שינית את שם הסקריפט, שנה אותו גם כאן בשורה למטה
         pyinstaller --onefile --windowed --icon="1.icns" --name "SystemGuard" Install_Video_Block.py
-
-    # 5. דחיסה ל-ZIP
-    - name: Zip the App
-      run: |
-        cd dist
-        zip -r SystemGuard.zip SystemGuard.app
-
-    # 6. העלאה לגוגל דרייב (השיטה היציבה עם Rclone ופענוח Python)
-    - name: Upload to Google Drive via Rclone (Robust) 🚀
+# --- החלף את שלב ההעלאה הישן (השבור) בקוד הבא ---
+    
+    - name: Upload to Google Drive via Rclone 🚀
       env:
-        # מעבירים את הסוד למשתנה סביבה
+        # מגדירים ל-Rclone כונן וירטואלי בשם 'gdrive'
+        RCLONE_CONFIG_GDRIVE_TYPE: drive
+        RCLONE_CONFIG_GDRIVE_SCOPE: drive
+        # כאן אנחנו משתמשים בסוד שלך
         GDRIVE_SA_BASE64: ${{ secrets.GDRIVE_CREDENTIALS_B64 }}
       run: |
-        echo "🔧 Installing Rclone..."
-        brew install rclone > /dev/null
+        # 1. התקנת Rclone (כלי מהיר להעברת קבצים)
+        brew install rclone
 
-        echo "🔓 Decoding credentials using Python..."
-        # שימוש בפייתון לפענוח בטוח של הסוד (מונע שגיאות רווחים)
-        python3 -c "import os, base64; open('service_account.json', 'wb').write(base64.b64decode(os.environ['GDRIVE_SA_BASE64']))"
+        # 2. פענוח הסוד מקודד ה-Base64 חזרה לקובץ JSON
+        echo "$GDRIVE_SA_BASE64" | base64 --decode > service_account.json
 
-        echo "⚙️ Configuring Rclone..."
-        # יצירת קובץ קונפיגורציה ידני
-        mkdir -p ~/.config/rclone
-        cat <<EOF > ~/.config/rclone/rclone.conf
-        [gdrive]
-        type = drive
-        scope = drive
-        service_account_file = $(pwd)/service_account.json
-        EOF
+        # 3. הגדרת הנתיב לקובץ ה-JSON עבור Rclone
+        export RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_FILE=$(pwd)/service_account.json
 
-        echo "📡 Verifying connection..."
-        # בדיקה שהחיבור תקין לפני ההעלאה
-        rclone about gdrive:
-
-        echo "🚀 Uploading to 'SystemGuard' folder..."
-        # העלאת הקובץ
+        # 4. ביצוע ההעלאה
+        # הפקודה מעתיקה את ה-ZIP לתוך תיקייה בשם SystemGuard בדרייב שלך
         rclone copy dist/SystemGuard.zip gdrive:SystemGuard/ --progress
 
         echo "✅ Upload finished successfully!"
