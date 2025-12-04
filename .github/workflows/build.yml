@@ -1,33 +1,45 @@
-name: Build macOS App
+name: Build macOS App with Icon
 
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch: # מאפשר להריץ ידנית בלחיצת כפתור
 
 jobs:
   build:
     runs-on: macos-latest
 
     steps:
+    # 1. משיכת הקוד והקבצים שלך (כולל האייקון)
     - uses: actions/checkout@v3
 
+    # 2. התקנת פייתון
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
+    # 3. התקנת הספריות הדרושות
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller tk
 
+    # 4. הקימפול עצמו - כאן הוספנו את האייקון
     - name: Build with PyInstaller
       run: |
-        # שים לב: שנה את השם Install_Video_Block.py לשם הקובץ האמיתי שלך
-        pyinstaller --onefile --windowed --name "SystemGuard" Install_Video_Block.py
+        # הפקודה כוללת עכשיו את דגל האייקון
+        pyinstaller --onefile --windowed --icon="1.icns" --name "SystemGuard" Install_Video_Block.py
 
+    # 5. דחיסת האפליקציה ל-ZIP (כדי לשמור על הרשאות והאייקון)
+    - name: Zip the App
+      run: |
+        cd dist
+        zip -r SystemGuard.zip SystemGuard.app
+
+    # 6. העלאת הקובץ המוכן להורדה
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: SystemGuard-App
-        path: dist/SystemGuard.app
+        name: SystemGuard-App-With-Icon
+        path: dist/SystemGuard.zip
