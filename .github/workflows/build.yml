@@ -18,28 +18,26 @@ jobs:
         with:
           python-version: '3.11'
 
+      # --- התיקון נמצא כאן ---
+      # במקום לחפש קובץ, אנחנו מתקינים ישירות את מה שצריך
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install pyinstaller
 
-      # שלב הבנייה - יוצר את ה-APP עם האייקון
       - name: Build with PyInstaller
         run: |
+          # וודא שקובץ האייקון 1.icns באמת קיים בגיטהאב, אחרת גם זה ייכשל
           pyinstaller --noconfirm --onefile --windowed --icon "1.icns" --name "SystemGuard" --clean "Install_Video_Block.py"
 
-      # שלב החתימה הבסיסית (Ad-hoc Signing)
-      # הדגל "-s -" אומר למערכת לחתום חתימה מקומית ללא תעודה
       - name: Ad-hoc Sign the Application
         run: |
           codesign --force --deep --sign - dist/SystemGuard.app
 
-      # יצירת קובץ ZIP להורדה
       - name: Zip the Application
         run: |
           cd dist
           zip -r SystemGuard.zip SystemGuard.app
 
-      # העלאת הקובץ המוכן
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
