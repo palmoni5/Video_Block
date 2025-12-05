@@ -1,8 +1,8 @@
-name: Build macOS App with Icon and Upload to Drive
+name: Build macOS App
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -10,47 +10,41 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    # 1. משיכת הקוד
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    # 2. התקנת פייתון
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
+        architecture: 'x64'
 
-    # 3. התקנת ספריות
-    - name: Install dependencies
+    - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller tk
+        pip install pyinstaller pillow
+        # הוספתי את pillow למקרה שתשתמש בתמונות בתוך הקוד עצמו בעתיד
 
-    # 4. בניית האפליקציה (ודא ששם הסקריפט שלך נכון!)
-    - name: Build with PyInstaller
+    - name: Build Application with PyInstaller
       run: |
-        # אם שינית את שם הסקריפט, שנה אותו גם כאן בשורה למטה
-        pyinstaller --onefile --windowed --icon="1.icns" --name "SystemGuard" Install_Video_Block.py
-# --- החלף את שלב ההעלאה הישן (השבור) בקוד הבא ---
-    
-    - name: Upload to Google Drive via Rclone 🚀
-      env:
-        # מגדירים ל-Rclone כונן וירטואלי בשם 'gdrive'
-        RCLONE_CONFIG_GDRIVE_TYPE: drive
-        RCLONE_CONFIG_GDRIVE_SCOPE: drive
-        # כאן אנחנו משתמשים בסוד שלך
-        GDRIVE_SA_BASE64: ${{ secrets.GDRIVE_CREDENTIALS_B64 }}
+        # --icon "1.icns" : קובע את סמל האפליקציה ב-Finder/Dock
+        # --add-data "1.icns:." : מכליל את הקובץ גם בתוך האפליקציה לשימוש פנימי אם תצטרך
+        
+        pyinstaller --noconfirm --onefile --windowed --clean \
+          --icon "1.icns" \
+          --name "SystemGuard" \
+          --add-data "Install_Video_Block.py:." \
+          --add-data "1.icns:." \
+          "Install_Video_Block.py"
+
+    - name: Zip the App (Preserve Permissions)
       run: |
-        # 1. התקנת Rclone (כלי מהיר להעברת קבצים)
-        brew install rclone
+        cd dist
+        # דחיסה שומרת על ה-Icon וההרשאות
+        zip -r SystemGuard_macOS.zip SystemGuard.app
 
-        # 2. פענוח הסוד מקודד ה-Base64 חזרה לקובץ JSON
-        echo "$GDRIVE_SA_BASE64" | base64 --decode > service_account.json
-
-        # 3. הגדרת הנתיב לקובץ ה-JSON עבור Rclone
-        export RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_FILE=$(pwd)/service_account.json
-
-        # 4. ביצוע ההעלאה
-        # הפקודה מעתיקה את ה-ZIP לתוך תיקייה בשם SystemGuard בדרייב שלך
-        rclone copy dist/SystemGuard.zip gdrive:SystemGuard/ --progress
-
-        echo "✅ Upload finished successfully!"
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SystemGuard-macOS
+        path: dist/SystemGuard_macOS.zip
