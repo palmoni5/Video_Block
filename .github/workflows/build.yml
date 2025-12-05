@@ -1,8 +1,8 @@
-name: Build macOS App
+name: Build macOS App (Ad-hoc)
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -10,41 +10,38 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-        architecture: 'x64'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pillow
-        # הוספתי את pillow למקרה שתשתמש בתמונות בתוך הקוד עצמו בעתיד
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
 
-    - name: Build Application with PyInstaller
-      run: |
-        # --icon "1.icns" : קובע את סמל האפליקציה ב-Finder/Dock
-        # --add-data "1.icns:." : מכליל את הקובץ גם בתוך האפליקציה לשימוש פנימי אם תצטרך
-        
-        pyinstaller --noconfirm --onefile --windowed --clean \
-          --icon "1.icns" \
-          --name "SystemGuard" \
-          --add-data "Install_Video_Block.py:." \
-          --add-data "1.icns:." \
-          "Install_Video_Block.py"
+      # שלב הבנייה - יוצר את ה-APP עם האייקון
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --icon "1.icns" --name "SystemGuard" --clean "Install_Video_Block.py"
 
-    - name: Zip the App (Preserve Permissions)
-      run: |
-        cd dist
-        # דחיסה שומרת על ה-Icon וההרשאות
-        zip -r SystemGuard_macOS.zip SystemGuard.app
+      # שלב החתימה הבסיסית (Ad-hoc Signing)
+      # הדגל "-s -" אומר למערכת לחתום חתימה מקומית ללא תעודה
+      - name: Ad-hoc Sign the Application
+        run: |
+          codesign --force --deep --sign - dist/SystemGuard.app
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: SystemGuard-macOS
-        path: dist/SystemGuard_macOS.zip
+      # יצירת קובץ ZIP להורדה
+      - name: Zip the Application
+        run: |
+          cd dist
+          zip -r SystemGuard.zip SystemGuard.app
+
+      # העלאת הקובץ המוכן
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemGuard-App
+          path: dist/SystemGuard.zip
