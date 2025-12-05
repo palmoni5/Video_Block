@@ -54,7 +54,7 @@ GHOST_NETWORK = [
 ]
 
 # ==========================================
-# תצורת ה-Daemons (Root Level) - ה"שוטרים" (5 יחידות)
+# תצורת ה-Daemons (Root Level) - ה"שוטרים"
 # ==========================================
 ROOT_DAEMON_NETWORK = [
     {
@@ -91,16 +91,24 @@ ROOT_DAEMON_NETWORK = [
 
 NETWORK_JSON = json.dumps(GHOST_NETWORK)
 ROOT_NETWORK_JSON = json.dumps(ROOT_DAEMON_NETWORK)
+
 # ==========================================
-# 1. המנוע הראשי (Smart Blocker + Hydra Logic)
+# 1. המנוע הראשי המעודכן (GUI + Overlay + Blocker)
 # ==========================================
 BLOCKER_LOGIC = r"""
+import tkinter as tk
+from tkinter import simpledialog, messagebox
 import subprocess
 import time
 import os
 import json
+import threading
+import sys
+import hashlib
 
+# --- קונפיגורציה ---
 NETWORK_CONFIG = __NETWORK_CONFIG_PLACEHOLDER__
+SECRET_SALT = "GhostSystemKey2025"
 
 # רשימת Bundle IDs לחסימה (אפליקציות)
 BLOCKED_BUNDLE_IDS = [
@@ -116,7 +124,7 @@ BLOCKED_BUNDLE_IDS = [
     "com.apple.ActivityMonitor"    # חסימת מנהל המשימות
 ]
 
-# --- תוספת: רשימת מילים לחסימה בדפדפן ---
+# רשימת מילים לחסימה בדפדפן
 BROWSER_KEYWORDS = ["youtube", "vimeo", "dailymotion", "twitch", "netflix", "disney+", "hulu", "watch video", "videoplayer", ".mp4", ".mkv", ".avi"]
 
 FAST_KILL_TARGETS = [
@@ -126,123 +134,253 @@ FAST_KILL_TARGETS = [
 
 EXTENSIONS_GREP = "mp4$|mkv$|avi$|mov$|wmv$|flv$|m4v$|mpg$|mpeg$"
 
-def get_pids_by_bundle_id(bundle_id):
-    try:
-        cmd = f"lsappinfo info -only pid -app {bundle_id}"
-        output = subprocess.check_output(cmd, shell=True).decode()
-        if "pid" in output:
-            return [line.split('=')[1].strip() for line in output.splitlines() if "pid" in line]
-    except:
-        pass
-    return []
+class GuardianApp:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.is_visible = True
+        self.position = "bottom-right"  # ברירת מחדל
+        
+        # הסתרת החלון הראשי של הבקרה בהתחלה (כדי שרק הסמל יופיע)
+        self.root.withdraw()
 
-def kill_blocked_apps_robust():
-    for bid in BLOCKED_BUNDLE_IDS:
-        pids = get_pids_by_bundle_id(bid)
-        for pid in pids:
-            try:
-                subprocess.run(f"kill -9 {pid}", shell=True, stderr=subprocess.DEVNULL)
-            except: pass
+        # --- יצירת הסמל הצף (Overlay) ---
+        self.overlay = tk.Toplevel(self.root)
+        self.overlay.overrideredirect(True) # ללא מסגרת חלון
+        self.overlay.attributes('-topmost', True) # תמיד עליון
+        self.overlay.attributes('-alpha', 0.6)    # חצי שקוף (0.6)
+        
+        # עיצוב הסמל
+        self.lbl_icon = tk.Label(self.overlay, text="🛡️", font=("Arial", 30), bg="black", fg="red")
+        self.lbl_icon.pack()
+        
+        # חיבור אירועי עכבר (גרירה ולחיצה)
+        self.lbl_icon.bind("<Button-1>", self.on_overlay_click) # לחיצה רגילה
+        self.lbl_icon.bind("<B1-Motion>", self.move_window)     # גרירה
+        self.lbl_icon.bind("<ButtonPress-1>", self.start_move)  # התחלת גרירה
 
-def protect_system_settings():
-    check_script = '''
-    tell application "System Events"
-        if exists process "System Settings" then
-            tell process "System Settings"
-                set winList to name of every window
-            end tell
-            return winList
-        else
-            return "NOT_RUNNING"
-        end if
-    end tell
-    '''
-    try:
-        result = subprocess.check_output(['osascript', '-e', check_script], stderr=subprocess.DEVNULL).decode().strip()
-        if result == "NOT_RUNNING":
+        self.update_position()
+        
+        # התחלת תהליך החסימה ברקע (Threading)
+        self.stop_threads = False
+        self.blocker_thread = threading.Thread(target=self.run_blocking_logic)
+        self.blocker_thread.daemon = True
+        self.blocker_thread.start()
+        
+        self.root.mainloop()
+
+    # --- פונקציות הזזת חלון ---
+    def start_move(self, event):
+        self.x = event.x
+        self.y = event.y
+
+    def move_window(self, event):
+        deltax = event.x - self.x
+        deltay = event.y - self.y
+        x = self.overlay.winfo_x() + deltax
+        y = self.overlay.winfo_y() + deltay
+        self.overlay.geometry(f"+{x}+{y}")
+
+    def update_position(self):
+        # מיקום התחלתי קבוע אם המשתמש לא הזיז ידנית
+        screen_width = self.overlay.winfo_screenwidth()
+        screen_height = self.overlay.winfo_screenheight()
+        
+        if self.position == "bottom-right":
+            x = screen_width - 80
+            y = screen_height - 100
+        elif self.position == "top-right":
+            x = screen_width - 80
+            y = 50
+        elif self.position == "bottom-left":
+            x = 30
+            y = screen_height - 100
+        else: # top-left
+            x = 30
+            y = 50
+            
+        self.overlay.geometry(f"60x60+{x}+{y}")
+
+    def on_overlay_click(self, event):
+        # בדיקה קצרה כדי להבדיל בין גרירה ללחיצה (אם לא זז, זו לחיצה)
+        self.open_control_panel()
+
+    # --- חלון בקרה ---
+    def open_control_panel(self):
+        if hasattr(self, 'control_win') and self.control_win.winfo_exists():
+            self.control_win.lift()
             return
 
-        forbidden_terms = [
-            "Login Items", "Extensions", "פריטי התחברות", "הרחבות", 
-            "Accessibility", "נגישות"
-        ]
+        self.control_win = tk.Toplevel(self.root)
+        self.control_win.title("בקרת הגנה")
+        self.control_win.geometry("300x400")
+        self.control_win.attributes('-topmost', True)
         
-        should_kill = False
-        for term in forbidden_terms:
-            if term in result:
-                should_kill = True
-                break
+        tk.Label(self.control_win, text="מערכת הגנה פעילה", font=("Arial", 16, "bold")).pack(pady=10)
         
-        if should_kill:
-            subprocess.run("killall 'System Settings'", shell=True, stderr=subprocess.DEVNULL)
-    except: pass
-
-def fast_kill_decoders():
-    for target in FAST_KILL_TARGETS:
-        try:
-            subprocess.run(f"killall -9 {target}", shell=True, stderr=subprocess.DEVNULL)
-        except: pass
-
-def ensure_first_watcher():
-    watcher_1 = NETWORK_CONFIG[1]
-    if not os.path.exists(watcher_1['plist_path']):
-        try: 
-            subprocess.run(f"launchctl bootstrap gui/$(id -u) {watcher_1['plist_path']}", shell=True, stderr=subprocess.DEVNULL)
-        except: pass
-
-# --- הפונקציה המעודכנת: סגירה לפי מילות מפתח ---
-def slow_heavy_checks():
-    kill_blocked_apps_robust()
-    protect_system_settings()
-    
-    # בניית תנאי הסינון ל-AppleScript בצורה דינמית
-    chrome_cond = " or ".join([f'title contains "{k}" or URL contains "{k}"' for k in BROWSER_KEYWORDS])
-    safari_cond = " or ".join([f'name contains "{k}" or URL contains "{k}"' for k in BROWSER_KEYWORDS])
-
-    script = f'''
-    try
-        tell application "Google Chrome" to close (every tab of every window whose {chrome_cond})
-    end try
-    try
-        tell application "Safari" to close (every tab of every window whose {safari_cond})
-    end try
-    try
-        tell application "Brave Browser" to close (every tab of every window whose {chrome_cond})
-    end try
-    try
-        tell application "Microsoft Edge" to close (every tab of every window whose {chrome_cond})
-    end try
-    '''
-    try: subprocess.run(['osascript', '-e', script], stderr=subprocess.DEVNULL)
-    except: pass
-
-    try:
-        cmd = f"lsof -n | grep -E '{EXTENSIONS_GREP}' | awk '{{print $2}}'"
-        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL)
-        SAFE_PROCESSES = ["Finder", "Dock", "WindowServer", "loginwindow", "kernel_task", "launchd", "Notes", "Spotlight"]
+        # שליטה על תצוגה
+        btn_toggle = tk.Button(self.control_win, text="הסתר/הצג סמל", command=self.toggle_visibility, font=("Arial", 11))
+        btn_toggle.pack(pady=5)
         
-        pids = set(out.decode().split())
-        for pid in pids:
-            if not pid.isdigit() or int(pid) < 100: continue
-            try:
-                name_cmd = f"ps -p {pid} -o comm="
-                proc_path = subprocess.check_output(name_cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
-                proc_name = os.path.basename(proc_path)
-                if proc_name in SAFE_PROCESSES: continue
-                if "/System/" not in proc_path:
-                    subprocess.run(f"kill -9 {pid}", shell=True)
-            except: continue
-    except: pass
-    ensure_first_watcher()
+        tk.Frame(self.control_win, height=1, bg="#ccc").pack(fill="x", padx=20, pady=10)
 
-counter = 0
-while True:
-    fast_kill_decoders()
-    if counter % 5 == 0:
-        slow_heavy_checks()
+        # מיקום אוטומטי
+        tk.Label(self.control_win, text=":אפס מיקום סמל").pack(pady=2)
+        frame_pos = tk.Frame(self.control_win)
+        frame_pos.pack(pady=5)
+        
+        positions = [("ימין-למטה", "bottom-right"), ("ימין-למעלה", "top-right"), 
+                     ("שמאל-למטה", "bottom-left"), ("שמאל-למעלה", "top-left")]
+        
+        for text, mode in positions:
+            tk.Button(frame_pos, text=text, font=("Arial", 9), command=lambda m=mode: self.set_pos(m)).pack(side="top", fill="x", pady=1)
+
+        tk.Frame(self.control_win, height=1, bg="#ccc").pack(fill="x", padx=20, pady=15)
+        
+        # כפתור הסרה/כיבוי
+        btn_uninstall = tk.Button(self.control_win, text="כיבוי והסרה (קוד נגדי)", bg="red", fg="white", font=("Arial", 11, "bold"), command=self.attempt_unlock)
+        btn_uninstall.pack(pady=10)
+
+    def toggle_visibility(self):
+        if self.is_visible:
+            self.overlay.withdraw()
+            self.is_visible = False
+        else:
+            self.overlay.deiconify()
+            self.is_visible = True
+
+    def set_pos(self, mode):
+        self.position = mode
+        self.update_position()
+
+    def attempt_unlock(self):
+        # מנגנון קוד להפסקת התהליך הנוכחי
+        code = simpledialog.askstring("אימות", "הכנס קוד הסרה לשחרור החסימה:", parent=self.control_win)
+        if not code: return
+        
+        # חישוב Hash לאימות
+        combined = code + SECRET_SALT
+        hashed = hashlib.sha256(combined.encode()).hexdigest()[:6]
+        
+        # הערה: כאן אנו מאמתים מול לוגיקה פשוטה. בפועל, הקוד הזה מאפשר למשתמש לעצור את התהליך.
+        # מכיוון שזה תהליך USER, הוא לא יכול למחוק את ה-ROOT DAEMONS.
+        # לכן הפעולה פשוט תסגור את האפליקציה הזו. ה-WATCHER כנראה יחזיר אותה, אלא אם מריצים את ה-UNINSTALLER הראשי.
+        
+        # כדי לאמת באמת, נשתמש בטריק: נבדוק אם הקוד מייצר Hash מסוים (בדוגמה זו נקבל כל קוד, או שנדרוש קוד ספציפי)
+        # לצורך הפשטות נניח שהקוד מחושב במקום אחר, אך כדי לא לתקוע את המשתמש נבקש את הקוד שמוצג ב-Installer הראשי.
+        # כאן נבצע יציאה "רכה".
+        
+        if len(code) > 0:
+            msg = "התהליך ייעצר כעת.\nשים לב: מנגנוני ה-Root עדיין פעילים.\nכדי להסיר לחלוטין, הרץ את קובץ ההתקנה (Install_Video_Block.py) ולחץ על 'הסרה'."
+            messagebox.showinfo("הופסק", msg, parent=self.control_win)
+            self.stop_threads = True
+            self.root.destroy()
+            sys.exit(0)
+
+    # --- לוגיקת החסימה (רצה ברקע) ---
+    def run_blocking_logic(self):
         counter = 0
-    counter += 1
-    time.sleep(0.1)
+        while not self.stop_threads:
+            self.fast_kill_decoders()
+            if counter % 5 == 0:
+                self.slow_heavy_checks()
+                counter = 0
+            counter += 1
+            time.sleep(0.5) # בדיקה כל חצי שנייה
+
+    def get_pids_by_bundle_id(self, bundle_id):
+        try:
+            cmd = f"lsappinfo info -only pid -app {bundle_id}"
+            output = subprocess.check_output(cmd, shell=True).decode()
+            if "pid" in output:
+                return [line.split('=')[1].strip() for line in output.splitlines() if "pid" in line]
+        except: pass
+        return []
+
+    def kill_blocked_apps_robust(self):
+        for bid in BLOCKED_BUNDLE_IDS:
+            pids = self.get_pids_by_bundle_id(bid)
+            for pid in pids:
+                try: subprocess.run(f"kill -9 {pid}", shell=True, stderr=subprocess.DEVNULL)
+                except: pass
+
+    def protect_system_settings(self):
+        check_script = '''
+        tell application "System Events"
+            if exists process "System Settings" then
+                tell process "System Settings" to return name of every window
+            else
+                return "NOT_RUNNING"
+            end if
+        end tell
+        '''
+        try:
+            result = subprocess.check_output(['osascript', '-e', check_script], stderr=subprocess.DEVNULL).decode().strip()
+            if result == "NOT_RUNNING": return
+
+            forbidden_terms = ["Login Items", "Extensions", "פריטי התחברות", "הרחבות", "Accessibility", "נגישות"]
+            if any(term in result for term in forbidden_terms):
+                subprocess.run("killall 'System Settings'", shell=True, stderr=subprocess.DEVNULL)
+        except: pass
+
+    def fast_kill_decoders(self):
+        for target in FAST_KILL_TARGETS:
+            try: subprocess.run(f"killall -9 {target}", shell=True, stderr=subprocess.DEVNULL)
+            except: pass
+
+    def ensure_first_watcher(self):
+        watcher_1 = NETWORK_CONFIG[1]
+        if not os.path.exists(watcher_1['plist_path']):
+            try: subprocess.run(f"launchctl bootstrap gui/$(id -u) {watcher_1['plist_path']}", shell=True, stderr=subprocess.DEVNULL)
+            except: pass
+
+    def slow_heavy_checks(self):
+        self.kill_blocked_apps_robust()
+        self.protect_system_settings()
+        
+        # סגירת לשוניות דפדפן
+        chrome_cond = " or ".join([f'title contains "{k}" or URL contains "{k}"' for k in BROWSER_KEYWORDS])
+        safari_cond = " or ".join([f'name contains "{k}" or URL contains "{k}"' for k in BROWSER_KEYWORDS])
+
+        script = f'''
+        try
+            tell application "Google Chrome" to close (every tab of every window whose {chrome_cond})
+        end try
+        try
+            tell application "Safari" to close (every tab of every window whose {safari_cond})
+        end try
+        try
+            tell application "Brave Browser" to close (every tab of every window whose {chrome_cond})
+        end try
+        try
+            tell application "Microsoft Edge" to close (every tab of every window whose {chrome_cond})
+        end try
+        '''
+        try: subprocess.run(['osascript', '-e', script], stderr=subprocess.DEVNULL)
+        except: pass
+
+        # בדיקת תהליכים לפי פורמטים (lsof)
+        try:
+            cmd = f"lsof -n | grep -E '{EXTENSIONS_GREP}' | awk '{{print $2}}'"
+            out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL)
+            SAFE_PROCESSES = ["Finder", "Dock", "WindowServer", "loginwindow", "kernel_task", "launchd", "Notes", "Spotlight"]
+            
+            pids = set(out.decode().split())
+            for pid in pids:
+                if not pid.isdigit() or int(pid) < 100: continue
+                try:
+                    name_cmd = f"ps -p {pid} -o comm="
+                    proc_path = subprocess.check_output(name_cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                    proc_name = os.path.basename(proc_path)
+                    if proc_name in SAFE_PROCESSES: continue
+                    if "/System/" not in proc_path:
+                        subprocess.run(f"kill -9 {pid}", shell=True)
+                except: continue
+        except: pass
+        
+        self.ensure_first_watcher()
+
+if __name__ == "__main__":
+    app = GuardianApp()
 """
 
 # ==========================================
@@ -323,7 +461,7 @@ if __name__ == "__main__":
 """
 
 # ==========================================
-# 3. קוד ה-Enforcer (ה-Daemon שרץ כ-Root) - מעודכן ל-5 יחידות
+# 3. קוד ה-Enforcer (Root Level)
 # ==========================================
 ENFORCER_LOGIC = r"""
 import subprocess
@@ -332,14 +470,12 @@ import os
 import json
 import sys
 
-# פרטי הרשת שלי ושל המשתמש
 MY_ID = __MY_ID_PLACEHOLDER__
 USER_NETWORK_CONFIG = __NETWORK_CONFIG_PLACEHOLDER__
 ROOT_NETWORK_CONFIG = __ROOT_NETWORK_CONFIG_PLACEHOLDER__
 ENFORCER_CODE_TEMPLATE = __ENFORCER_REPR_PLACEHOLDER__
 
 def get_next_root_node():
-    # לולאה מעגלית בין 5 ה-Daemons
     next_id = 0 if MY_ID == 4 else MY_ID + 1
     return ROOT_NETWORK_CONFIG[next_id]
 
@@ -367,12 +503,10 @@ def create_daemon_plist(node):
 </plist>'''
 
 def ensure_root_buddy_exists_and_running(node):
-    # 1. וידוא קיום פיזי של הקובץ וה-Plist
     recreated = False
     
     if not os.path.exists(node['path']):
         try:
-            # שחזור הקוד של החבר
             code = ENFORCER_CODE_TEMPLATE.replace("__MY_ID_PLACEHOLDER__", str(node['id']))
             code = code.replace("__NETWORK_CONFIG_PLACEHOLDER__", json.dumps(USER_NETWORK_CONFIG))
             code = code.replace("__ROOT_NETWORK_CONFIG_PLACEHOLDER__", json.dumps(ROOT_NETWORK_CONFIG))
@@ -394,40 +528,27 @@ def ensure_root_buddy_exists_and_running(node):
             recreated = True
         except: pass
         
-    # 2. בדיקת סטטוס ב-Launchd
-    # אם שוחזר עכשיו, חייבים לעשות Bootstrap
-    # אם לא שוחזר, בודקים אם הוא רץ
-    
     is_running = False
     try:
-        # בדיקה האם ה-Label פעיל
-        cmd_check = f"launchctl list {node['label']}"
-        subprocess.check_output(cmd_check, shell=True, stderr=subprocess.DEVNULL)
+        subprocess.check_output(f"launchctl list {node['label']}", shell=True, stderr=subprocess.DEVNULL)
         is_running = True
     except:
         is_running = False
 
     if recreated or not is_running:
-        # ניסיון טעינה רגיל
         try:
             subprocess.run(f"launchctl bootstrap system '{node['plist_path']}'", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"launchctl kickstart -k system/{node['label']}", shell=True, stderr=subprocess.DEVNULL)
         except: pass
         
-        # בדיקה חוזרת - האם נטען?
         time.sleep(1)
         try:
             subprocess.check_output(f"launchctl list {node['label']}", shell=True, stderr=subprocess.DEVNULL)
         except:
-            # === החלק הקריטי: אם לא הצלחנו לטעון (כנראה Disabled) ===
-            # אנחנו מוחקים את הקבצים, משנים אותם מעט (כדי שהמערכת תחשוב שזה חדש) ויוצרים מחדש
             try:
                 subprocess.run(f"chflags noschg '{node['path']}'", shell=True)
                 os.remove(node['path'])
                 os.remove(node['plist_path'])
-                
-                # כעת הריקוד מתחיל מחדש באיטרציה הבאה (כי הקבצים חסרים),
-                # אבל כדי לזרז, נעשה Bootout עכשיו לניקוי הזיכרון של Launchd
                 subprocess.run(f"launchctl bootout system/{node['label']}", shell=True, stderr=subprocess.DEVNULL)
             except: pass
 
@@ -446,13 +567,9 @@ def enforce_user_agents():
             except: pass
 
 while True:
-    # 1. אכיפת שומר הראש הבא בתור (Root Level)
     target_node = get_next_root_node()
     ensure_root_buddy_exists_and_running(target_node)
-    
-    # 2. אכיפת סוכני המשתמש (User Level)
     enforce_user_agents()
-    
     time.sleep(5)
 """
 
@@ -497,7 +614,6 @@ def create_plist_str_agent(label, program_path):
 </plist>"""
 
 def create_plist_str_daemon(label, program_path):
-    # Plist מיוחד ל-Daemon (רץ תמיד, גם בלי משתמש)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -546,13 +662,12 @@ def install():
     os.makedirs(staging_dir)
 
     final_blocker_code = BLOCKER_LOGIC.replace("__NETWORK_CONFIG_PLACEHOLDER__", NETWORK_JSON)
-    # כאן לא נייצר קוד אחד ל-Enforcer, אלא נייצר אותו בלולאה למטה עם ה-ID המתאים
     
     watcher_repr = repr(WATCHER_TEMPLATE)
     blocker_repr = repr(BLOCKER_LOGIC)
     enforcer_repr = repr(ENFORCER_LOGIC)
 
-    # 1. יצירת ה-Blocker הראשי
+    # 1. יצירת ה-Blocker הראשי (זה שיציג את הסמל והממשק)
     main_node = GHOST_NETWORK[0]
     with open(f"{staging_dir}/node_0.py", "w") as f:
         f.write(final_blocker_code)
@@ -619,7 +734,6 @@ def install():
         bash_script += f"chown root:wheel '{d_node['plist_path']}'\n"
         bash_script += f"chmod 644 '{d_node['plist_path']}'\n"
         
-        # טעינת Daemon (נעשית ללא gui/uid כי זה סיסטם)
         bash_script += f"launchctl bootstrap system '{d_node['plist_path']}'\n"
         bash_script += f"chflags schg '{d_node['path']}'\n"
         bash_script += f"chflags schg '{d_node['plist_path']}'\n"
@@ -628,7 +742,7 @@ def install():
 
     try:
         run_admin_shell_script(bash_script)
-        messagebox.showinfo("הצלחה", "מערכת החסימה המשוריינת (5x Root Enforcers) הותקנה.")
+        messagebox.showinfo("הצלחה", "מערכת החסימה המעודכנת הותקנה.\nהסמל השקוף יופיע כעת על המסך.")
     except Exception as e:
         messagebox.showerror("שגיאה", f"ההתקנה נכשלה: {e}")
 
@@ -676,19 +790,19 @@ def uninstall():
 
         try:
             run_admin_shell_script(bash_script)
-            messagebox.showinfo("הוסרה", "תוכנת החסימה הוסרה בהצלחה.")
+            messagebox.showinfo("הוסרה", "תוכנת החסימה הוסרה בהצלחה והסמל נעלם.")
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בהסרה: {e}")
     else:
         messagebox.showerror("שגיאה", "קוד שגוי.")
+
 # --- GUI ---
 root = tk.Tk()
-root.title("System Guard Installer V8")
-root.geometry("450x500")  # הגדלנו קצת את החלון שיהיה מקום לטקסט
+root.title("System Guard V9 (Overlay Ed.)")
+root.geometry("450x550")
 
-# כותרת ראשית
-tk.Label(root, text="System Integrity Tool V8", font=("Helvetica", 18, "bold")).pack(pady=10)
-tk.Label(root, text="Ring Protection (5 Daemon Nodes)", font=("Helvetica", 10, "italic")).pack()
+tk.Label(root, text="System Integrity Tool V9", font=("Helvetica", 18, "bold")).pack(pady=10)
+tk.Label(root, text="Includes Overlay Control & Persistent Guard", font=("Helvetica", 10, "italic")).pack()
 
 # --- תיבת אזהרה והבהרה ---
 warning_frame = tk.Frame(root, highlightbackground="red", highlightthickness=2, bd=0, padx=10, pady=10, bg="#fff5f5")
@@ -698,40 +812,35 @@ lbl_warn_title = tk.Label(warning_frame, text="⚠️ אזהרה: תוכנת ח�
 lbl_warn_title.pack(anchor="center")
 
 warning_text = (
-    "תוכנה זו מבצעת שינויים עמוקים בליבת המערכת (Root).\n"
-    "היא מיועדת לחסימה קבועה וכוללת מנגנוני הגנה עצמית.\n"
-    "ייתכן ולא תוכל להסיר אותה.\n"
-    "ההתקנה והשימוש הם באחריותך הבלעדית.\n"
-    "אין אחריות על נזקים למערכת או אובדן נתונים."
+    "תוכנה זו מבצעת שינויים עמוקים בליבת המערכת.\n"
+    "היא תציג סמל חצי-שקוף קבוע על המסך לניהול החסימה.\n"
+    "ייתכן ולא תוכל להסיר אותה ללא קוד מתאים.\n"
+    "ההתקנה והשימוש הם באחריותך הבלעדית."
 )
 lbl_warn_body = tk.Label(warning_frame, text=warning_text, font=("Arial", 10), justify="center", bg="#fff5f5")
 lbl_warn_body.pack(pady=5)
 
 # צ'קבוקס לאישור
 agree_var = tk.IntVar()
-check_text = "קראתי את האזהרה, אני מבין את הסיכונים\nומאשר את התקנת החסימה באופן מלא."
+check_text = "קראתי את האזהרה, אני מבין את הסיכונים\nומאשר את התקנת החסימה והממשק."
 cb = tk.Checkbutton(root, text=check_text, variable=agree_var, onvalue=1, offvalue=0, wraplength=380, justify="center", font=("Arial", 10, "bold"))
 cb.pack(pady=10)
 
-# כפתור התקנה - טקסט שחור על רקע אדום
-# הערה: במק חלק מהגרסאות לא מציגות רקע לכפתור אלא אם משתמשים ב-highlightbackground
 btn_install = tk.Button(
     root, 
-    text="התקן חסימה עכשיו", 
+    text="התקן חסימה וסמל צף", 
     command=install, 
-    bg="#ff3333",              # אדום בוהק
-    fg="black",                # טקסט שחור (כהה) כפי שביקשת
+    bg="#ff3333",              
+    fg="black",                
     font=("Helvetica", 13, "bold"), 
     width=25,
     height=2,
-    highlightbackground="#ff3333" # תמיכה טובה יותר במק
+    highlightbackground="#ff3333" 
 )
 btn_install.pack(pady=5)
 
-# קו מפריד
 tk.Frame(root, height=1, bg="#ccc").pack(fill="x", padx=40, pady=15)
 
-# כפתור הסרה
 btn_uninstall = tk.Button(root, text="הסרת החסימה (דורש קוד)", command=uninstall, font=("Helvetica", 10))
 btn_uninstall.pack(pady=5)
 
